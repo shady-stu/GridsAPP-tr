@@ -1,0 +1,197 @@
+// ---------------------------------------------------------------------------
+// Prisma schema — Orders Service
+// ---------------------------------------------------------------------------
+// This file is the single source of truth for the PostgreSQL schema.
+//
+// Notes on Prisma 7:
+//   * `provider = "prisma-client"` is the new Rust-free generator. It emits
+//     TypeScript into `src/generated/prisma`, which the application compiles
+//     together with its own code (that is why the generated client is gitignored).
+//   * `output` is mandatory in v7: nothing is generated into `node_modules`.
+//   * The connection URL lives in `prisma.config.ts` for CLI commands and is
+//     supplied through a driver adapter at runtime (see PrismaService).
+//
+// Multi-tenancy strategy: every tenant-scoped table carries `tenantId`, and every
+// composite index leads with it so tenant-scoped queries stay index-only. Tenant
+// isolation itself is enforced in the repository layer (see src/**/repositories),
+// never in controllers alone.
+// ---------------------------------------------------------------------------
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "esm"
+  runtime      = "nodejs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+/// A tenant is the isolation boundary. Users, customers and orders never cross it.
+model Tenant {
+  id      String   @id @default(uuid()) @db.Uuid
+  slug    String   @unique
+  name    String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  users         User[]
+  customers     Customer[]
+  orders        Order[]
+  webhookEvents WebhookEvent[]
+
+  @@map("tenants")
+}
+
+enum UserRole {
+  ADMIN
+  USER
+
+  @@map("user_role")
+}
+
+/// An authenticated principal. `passwordHash` uses scrypt (see PasswordService);
+/// plaintext passwords are never stored or logged.
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  email        String
+  displayName  String   @map("display_name")
+  passwordHash String   @map("password_hash")
+  role         UserRole @default(USER)
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  orders Order[] @relation("OrderOwner")
+  statusChanges OrderStatusHistory[]
+
+  // Email is unique *per tenant*, not globally: two tenants may onboard the same address.
+  // Deliberately unnamed so the generated client exposes the ergonomic `tenantId_email` key.
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@map("users")
+}
+
+model Customer {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  name      String
+  email     String
+  phone     String?
+  notes     String?
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  orders Order[]
+
+  // Prevents the same customer being registered twice inside one tenant.
+  @@unique([tenantId, email])
+  @@index([tenantId, createdAt])
+  @@map("customers")
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  FULFILLED
+  CANCELLED
+  REFUNDED
+
+  @@map("order_status")
+}
+
+/// An order. `userId` is the owner used for resource-ownership checks; `tenantId`
+/// is the isolation boundary used by every query.
+model Order {
+  id          String      @id @default(uuid()) @db.Uuid
+  tenantId    String      @map("tenant_id") @db.Uuid
+  customerId  String      @map("customer_id") @db.Uuid
+  userId      String      @map("user_id") @db.Uuid
+  status      OrderStatus @default(PENDING)
+  totalAmount Decimal     @map("total_amount") @db.Decimal(14, 2)
+  currency    String      @db.Char(3)
+  reference   String?
+  notes       String?
+  // Soft delete: orders are never hard-deleted because payment webhooks keep
+  // referencing them. See docs/ARCHITECTURE.md ("Deletion behaviour").
+  deletedAt   DateTime?   @map("deleted_at")
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  tenant   Tenant               @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  customer Customer             @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  owner    User                 @relation("OrderOwner", fields: [userId], references: [id], onDelete: Restrict)
+  history  OrderStatusHistory[]
+
+  @@index([tenantId, status, createdAt])
+  @@index([tenantId, userId, createdAt])
+  @@index([tenantId, deletedAt])
+  @@index([customerId])
+  @@map("orders")
+}
+
+/// Append-only audit trail of status transitions. Written inside the same
+/// transaction as the order update so the audit can never disagree with the row.
+model OrderStatusHistory {
+  id              String       @id @default(uuid()) @db.Uuid
+  orderId         String       @map("order_id") @db.Uuid
+  fromStatus      OrderStatus? @map("from_status")
+  toStatus        OrderStatus  @map("to_status")
+  changedByUserId String?      @map("changed_by_user_id") @db.Uuid
+  reason          String?
+  changedAt       DateTime     @default(now()) @map("changed_at")
+
+  order       Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  changedBy   User? @relation(fields: [changedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([orderId, changedAt])
+  @@map("order_status_history")
+}
+
+enum WebhookEventStatus {
+  RECEIVED
+  PROCESSING
+  PROCESSED
+  FAILED
+  DEAD_LETTER
+
+  @@map("webhook_event_status")
+}
+
+/// Durable inbox for provider webhooks.
+///
+/// `@@unique([provider, providerEventId])` is the idempotency key: a redelivered
+/// event violates the constraint and is acknowledged without re-running the
+/// business operation. Events are only inserted *after* the HMAC signature has
+/// been verified against the exact raw request body.
+model WebhookEvent {
+  id                String             @id @default(uuid()) @db.Uuid
+  provider          String
+  providerEventId   String             @map("provider_event_id")
+  eventType         String             @map("event_type")
+  status            WebhookEventStatus @default(RECEIVED)
+  // Tenant derived from the *verified* payload. Nullable because a provider may
+  // send an event we cannot map to a tenant; such events are dead-lettered.
+  tenantId          String?            @map("tenant_id") @db.Uuid
+  payload           Json
+  attempts          Int                @default(0)
+  maxAttempts       Int                @default(5) @map("max_attempts")
+  lastError         String?            @map("last_error")
+  occurredAt        DateTime           @map("occurred_at")
+  nextAttemptAt     DateTime?          @map("next_attempt_at")
+  receivedAt        DateTime           @default(now()) @map("received_at")
+  processingStartedAt DateTime?        @map("processing_started_at")
+  processedAt       DateTime?          @map("processed_at")
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@unique([provider, providerEventId])
+  @@index([status, nextAttemptAt])
+  @@index([tenantId, receivedAt])
+  @@map("webhook_events")
+}

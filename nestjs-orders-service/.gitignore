@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+coverage/
+
+# Prisma: the generated client is a build artifact (`npm run prisma:generate`),
+# it is intentionally not committed.
+src/generated/
+
+# Local environment
+.env
+.env.local
+.env.*.local
+
+# Local PostgreSQL data directory created by scripts/local-postgres.mjs
+.local-postgres/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Logs
+*.log
+logs/
+
+# TypeScript incremental build info
+*.tsbuildinfo

@@ -1,0 +1,13 @@
+html {
+  scroll-behavior: smooth;
+}
+::selection {
+  background: #dedbff;
+  color: #373264;
+}
+a,
+button,
+input,
+select {
+  -webkit-tap-highlight-color: transparent;
+}

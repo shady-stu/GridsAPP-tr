@@ -1,0 +1,41 @@
+{
+  "name": "integration-gateway-api",
+  "version": "1.0.0",
+  "description": "TypeScript REST API and signed payment webhook integration MVP",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/src/server.js",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src tests",
+    "format": "prettier --write .",
+    "format:check": "prettier --check src tests docs README.md",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "webhook:sign": "tsx src/scripts/sign-webhook.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@fastify/rate-limit": "^10.3.0",
+    "@fastify/swagger": "^9.5.1",
+    "@fastify/swagger-ui": "^5.2.3",
+    "better-sqlite3": "^12.4.1",
+    "dotenv": "^16.6.1",
+    "fastify": "^5.4.0",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/node": "^22.18.12",
+    "eslint": "^9.39.1",
+    "prettier": "^3.6.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.2",
+    "vitest": "^3.2.4"
+  }
+}
